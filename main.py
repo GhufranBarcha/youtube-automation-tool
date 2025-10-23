@@ -221,11 +221,12 @@ async def async_best_quality_video(
     
     # Quality settings for best quality
     quality_settings = {
-        "preset": "slow",
-        "crf": 18,
+        "preset": "slow",            # better quality per bitrate
+        "crf": 18,                   # near-lossless
         "audio_bitrate": "320k",
-        "video_filter": "scale=-2:1080,fps=60"
+        "video_filter": "scale=-2:1440,fps=30"
     }
+
     
     # Start background processing
     background_tasks.add_task(

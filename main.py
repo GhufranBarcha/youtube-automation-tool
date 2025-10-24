@@ -241,6 +241,7 @@ async def process_script_to_video_background(
     quality_settings: Dict
 ):
     """Process script to video in background"""
+    merged_audio_path = None
     try:
         # Update status to in_progress
         update_task_status(task_id, "in_progress")
@@ -299,7 +300,7 @@ async def process_script_to_video_background(
         try:
             if os.path.exists(image_path):
                 os.remove(image_path)
-            if os.path.exists(merged_audio_path):
+            if merged_audio_path and os.path.exists(merged_audio_path):
                 os.remove(merged_audio_path)
         except:
             pass

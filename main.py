@@ -449,7 +449,9 @@ async def async_script_to_video(
     Processes the entire workflow: script splitting, audio generation, merging, and video creation.
     """
     if not api_key:
-        raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
     
     task_id = str(uuid.uuid4())
     

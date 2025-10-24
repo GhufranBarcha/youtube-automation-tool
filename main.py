@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException, Form
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 import subprocess
 import os
 import uuid
@@ -16,6 +17,12 @@ from dotenv import load_dotenv
 app = FastAPI()
 
 load_dotenv()
+
+# Request models
+class ScriptToVideoRequest(BaseModel):
+    script: str
+    api_key: Optional[str] = None
+    quality: Optional[str] = "medium"
 
 # JSON file for task persistence
 TASKS_FILE = "tasks.json"
@@ -102,7 +109,7 @@ async def process_video_background(task_id: str, image_path: str, audio_path: st
         update_task_status(task_id, "completed", file_path=video_path)
         
     except subprocess.TimeoutExpired:
-        update_task_status(task_id, "failed", error="Processing timeout)")
+        update_task_status(task_id, "failed", error="Processing timeout")
     except subprocess.CalledProcessError as e:
         update_task_status(task_id, "failed", error=f"FFmpeg error: {e.stderr.decode()}")
     except Exception as e:
@@ -419,7 +426,6 @@ async def async_best_quality_video(
         "audio_bitrate": "320k",
         "video_filter": "scale=-2:1440,fps=30"
     }
-
     
     # Start background processing
     background_tasks.add_task(
@@ -437,21 +443,22 @@ async def async_best_quality_video(
 @app.post("/async_script_to_video")
 async def async_script_to_video(
     background_tasks: BackgroundTasks,
-    script: str,
+    script: str = Form(...),
     image: UploadFile = File(...),
-    api_key: str = None,
-    quality: str = "medium"
+    api_key: Optional[str] = Form(None),
+    quality: str = Form("medium")
 ):
     """
     Creates a video from a script and image using Gemini TTS.
     Processes the entire workflow: script splitting, audio generation, merging, and video creation.
     """
     
+    # Extract values from form data
+    api_key = api_key or os.environ.get("GEMINI_API_KEY")
+    
     if not api_key:
-        api_key = os.environ.get("GEMINI_API_KEY") 
-        if not api_key:
-            raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
-    print('api ket is ',api_key)
+        raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
+
     task_id = str(uuid.uuid4())
     
     # Save image upload

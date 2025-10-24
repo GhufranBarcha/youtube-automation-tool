@@ -5,8 +5,11 @@ import os
 import uuid
 import json
 import asyncio
+import re
+import base64
+import requests
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 app = FastAPI()
 
@@ -107,6 +110,197 @@ async def process_video_background(task_id: str, image_path: str, audio_path: st
                 os.remove(image_path)
             if os.path.exists(audio_path):
                 os.remove(audio_path)
+        except:
+            pass
+
+def split_script_into_chunks(script: str, max_chars: int = 10000) -> List[str]:
+    """Split script into chunks based on the n8n workflow logic"""
+    # Split by paragraphs (double newline)
+    paragraphs = [p for p in script.split('\n\n') if p.strip()]
+    
+    chunks = []
+    current_chunk = ''
+    
+    for para in paragraphs:
+        trimmed_para = para.strip()
+        test_chunk = current_chunk + '\n\n' + trimmed_para if current_chunk else trimmed_para
+        
+        # If adding this paragraph exceeds limit and we have content, save current chunk
+        if len(test_chunk) > max_chars and len(current_chunk) > 0:
+            chunks.append(current_chunk.strip())
+            current_chunk = trimmed_para
+        # If single paragraph exceeds limit, split by sentences
+        elif len(trimmed_para) > max_chars and len(current_chunk) == 0:
+            sentences = re.findall(r'[^.!?]+[.!?]+', trimmed_para) or [trimmed_para]
+            sentence_chunk = ''
+            
+            for sentence in sentences:
+                test_sentence = sentence_chunk + ' ' + sentence if sentence_chunk else sentence
+                
+                if len(test_sentence) > max_chars and len(sentence_chunk) > 0:
+                    chunks.append(sentence_chunk.strip())
+                    sentence_chunk = sentence
+                else:
+                    sentence_chunk = test_sentence
+            current_chunk = sentence_chunk
+        else:
+            current_chunk = test_chunk
+    
+    # Add final chunk
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+async def generate_audio_with_gemini(text: str, api_key: str) -> bytes:
+    """Generate audio using Gemini TTS API"""
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": text
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["audio"],
+            "temperature": 1,
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": "Zephyr"
+                    }
+                }
+            }
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    
+    result = response.json()
+    audio_data = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+    
+    return base64.b64decode(audio_data)
+
+async def merge_audio_files(audio_files: List[bytes], output_path: str):
+    """Merge multiple audio files into one"""
+    # Save individual PCM files
+    pcm_files = []
+    for i, audio_data in enumerate(audio_files):
+        pcm_path = f"/tmp/audio_chunk_{i}.pcm"
+        with open(pcm_path, "wb") as f:
+            f.write(audio_data)
+        pcm_files.append(pcm_path)
+    
+    # Create a temporary concatenated PCM file
+    temp_pcm_path = f"/tmp/temp_concatenated.pcm"
+    with open(temp_pcm_path, "wb") as outfile:
+        for pcm_file in pcm_files:
+            with open(pcm_file, "rb") as infile:
+                outfile.write(infile.read())
+    
+    # Convert PCM to WAV using FFmpeg
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "s16le",
+        "-ar", "24000",
+        "-ac", "1",
+        "-i", temp_pcm_path,
+        output_path
+    ]
+    
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    # Cleanup PCM files
+    for pcm_file in pcm_files:
+        try:
+            os.remove(pcm_file)
+        except:
+            pass
+    try:
+        os.remove(temp_pcm_path)
+    except:
+        pass
+
+async def process_script_to_video_background(
+    task_id: str, 
+    script: str, 
+    image_path: str, 
+    api_key: str,
+    quality_settings: Dict
+):
+    """Process script to video in background"""
+    try:
+        # Update status to in_progress
+        update_task_status(task_id, "in_progress")
+        
+        # Step 1: Split script into chunks
+        chunks = split_script_into_chunks(script)
+        
+        # Step 2: Generate audio for each chunk
+        audio_files = []
+        for chunk in chunks:
+            audio_data = await generate_audio_with_gemini(chunk, api_key)
+            audio_files.append(audio_data)
+        
+        # Step 3: Merge all audio files
+        merged_audio_path = f"/tmp/{task_id}_merged_audio.wav"
+        await merge_audio_files(audio_files, merged_audio_path)
+        
+        # Step 4: Create video with image and merged audio
+        video_path = f"/tmp/{task_id}_output.mp4"
+        
+        def run_ffmpeg():
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1",
+                "-i", image_path,
+                "-i", merged_audio_path,
+                "-c:v", "libx264",
+                "-tune", "stillimage",
+                "-preset", quality_settings["preset"],
+                "-crf", str(quality_settings["crf"]),
+                "-c:a", "aac",
+                "-b:a", quality_settings["audio_bitrate"],
+                "-shortest",
+                "-vf", quality_settings["video_filter"],
+                video_path
+            ]
+            
+            return subprocess.run(
+                cmd, 
+                check=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
+            )
+        
+        # Run in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, run_ffmpeg)
+        
+        # Update status to completed with file path
+        update_task_status(task_id, "completed", file_path=video_path)
+        
+    except Exception as e:
+        update_task_status(task_id, "failed", error=f"Processing error: {str(e)}")
+    finally:
+        # Cleanup input files
+        try:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+            if os.path.exists(merged_audio_path):
+                os.remove(merged_audio_path)
         except:
             pass
 
@@ -241,6 +435,69 @@ async def async_best_quality_video(
         "download_url": f"/download/{task_id}"
     }
 
+@app.post("/async_script_to_video")
+async def async_script_to_video(
+    background_tasks: BackgroundTasks,
+    script: str,
+    image: UploadFile = File(...),
+    api_key: str = None,
+    quality: str = "medium"
+):
+    """
+    Creates a video from a script and image using Gemini TTS.
+    Processes the entire workflow: script splitting, audio generation, merging, and video creation.
+    """
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
+    
+    task_id = str(uuid.uuid4())
+    
+    # Save image upload
+    image_path = f"/tmp/{task_id}_{image.filename}"
+    with open(image_path, "wb") as f:
+        f.write(await image.read())
+    
+    # Initialize task as queued
+    update_task_status(task_id, "queued")
+    
+    # Quality settings based on quality parameter
+    quality_settings_map = {
+        "test": {
+            "preset": "ultrafast",
+            "crf": 28,
+            "audio_bitrate": "128k",
+            "video_filter": "scale=-2:480,fps=15"
+        },
+        "medium": {
+            "preset": "medium",
+            "crf": 23,
+            "audio_bitrate": "192k",
+            "video_filter": "scale=-2:720,fps=30"
+        },
+        "best": {
+            "preset": "slow",
+            "crf": 18,
+            "audio_bitrate": "320k",
+            "video_filter": "scale=-2:1440,fps=30"
+        }
+    }
+    
+    quality_settings = quality_settings_map.get(quality, quality_settings_map["medium"])
+    
+    # Start background processing
+    background_tasks.add_task(
+        process_script_to_video_background, 
+        task_id, script, image_path, api_key, quality_settings
+    )
+    
+    return {
+        "task_id": task_id,
+        "status": "queued",
+        "check_url": f"/status/{task_id}",
+        "download_url": f"/download/{task_id}",
+        "quality": quality
+    }
+
 @app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
     """Check the status of a task"""
@@ -293,143 +550,4 @@ async def download_video(task_id: str):
         file_path,
         media_type="video/mp4",
         filename=f"video_{task_id}.mp4"
-    )
-
-# Keep original synchronous endpoints for backward compatibility
-@app.post("/test_quality_video")
-async def test_quality_video(image: UploadFile = File(...), audio: UploadFile = File(...)):
-    """
-    Creates a low-quality video for fast testing purposes.
-    Uses minimal settings for quick processing.
-    """
-    uid = str(uuid.uuid4())
-    image_path = f"/tmp/{uid}_{image.filename}"
-    audio_path = f"/tmp/{uid}_{audio.filename}"
-    video_path = f"/tmp/{uid}_output.mp4"
-
-    # Save uploads
-    with open(image_path, "wb") as f:
-        f.write(await image.read())
-    with open(audio_path, "wb") as f:
-        f.write(await audio.read())
-
-    # FFmpeg command for test quality (fast, low quality)
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", image_path,
-        "-i", audio_path,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",     # fastest encoding
-        "-crf", "28",               # lower quality, smaller file
-        "-c:a", "aac",
-        "-b:a", "128k",            # lower audio bitrate
-        "-shortest",
-        "-vf", "scale=-2:480,fps=15",  # 480p, 15 FPS for speed
-        video_path
-    ]
-
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        return {"error": e.stderr.decode()}
-
-    # Return the generated video file directly
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        filename="test_video.mp4"
-    )
-
-
-@app.post("/medium_quality_video")
-async def medium_quality_video(image: UploadFile = File(...), audio: UploadFile = File(...)):
-    """
-    Creates a medium-quality video optimized for YouTube uploads.
-    Balanced quality and file size for regular YouTube content.
-    """
-    uid = str(uuid.uuid4())
-    image_path = f"/tmp/{uid}_{image.filename}"
-    audio_path = f"/tmp/{uid}_{audio.filename}"
-    video_path = f"/tmp/{uid}_output.mp4"
-
-    # Save uploads
-    with open(image_path, "wb") as f:
-        f.write(await image.read())
-    with open(audio_path, "wb") as f:
-        f.write(await audio.read())
-
-    # FFmpeg command for medium quality (YouTube optimized)
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", image_path,
-        "-i", audio_path,
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-preset", "medium",       # balanced encoding speed/quality
-        "-crf", "23",              # good quality (YouTube recommended range)
-        "-c:a", "aac",
-        "-b:a", "192k",           # good audio quality
-        "-shortest",
-        "-vf", "scale=-2:720,fps=30",  # 720p HD, 30 FPS
-        video_path
-    ]
-
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        return {"error": e.stderr.decode()}
-
-    # Return the generated video file directly
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        filename="medium_quality_video.mp4"
-    )
-
-@app.post("/best_quality_video")
-async def best_quality_video(image: UploadFile = File(...), audio: UploadFile = File(...)):
-    """
-    Creates the highest quality video for premium YouTube content.
-    Uses maximum quality settings for professional uploads.
-    """
-    uid = str(uuid.uuid4())
-    image_path = f"/tmp/{uid}_{image.filename}"
-    audio_path = f"/tmp/{uid}_{audio.filename}"
-    video_path = f"/tmp/{uid}_output.mp4"
-
-    # Save uploads
-    with open(image_path, "wb") as f:
-        f.write(await image.read())
-    with open(audio_path, "wb") as f:
-        f.write(await audio.read())
-
-    # FFmpeg command for best quality (premium YouTube content)
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", image_path,
-        "-i", audio_path,
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-preset", "slow",         # best compression and quality
-        "-crf", "18",              # visually lossless quality
-        "-c:a", "aac",
-        "-b:a", "320k",           # maximum audio quality
-        "-shortest",
-        "-vf", "scale=-2:1080,fps=60",  # Full HD, 60 FPS for smooth playback
-        video_path
-    ]
-
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as e:
-        return {"error": e.stderr.decode()}
-
-    # Return the generated video file directly
-    return FileResponse(
-        video_path,
-        media_type="video/mp4",
-        filename="best_quality_video.mp4"
     )

@@ -258,6 +258,7 @@ async def process_script_to_video_background(
         audio_files = []
         for chunk in chunks:
             audio_data = await generate_audio_with_gemini(chunk, api_key)
+            await asyncio.sleep(30)
             audio_files.append(audio_data)
         
         # Step 3: Merge all audio files

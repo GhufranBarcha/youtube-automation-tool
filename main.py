@@ -11,7 +11,11 @@ import requests
 from datetime import datetime
 from typing import Dict, Optional, List
 
+from dotenv import load_dotenv
+
 app = FastAPI()
+
+load_dotenv()
 
 # JSON file for task persistence
 TASKS_FILE = "tasks.json"
@@ -448,11 +452,12 @@ async def async_script_to_video(
     Creates a video from a script and image using Gemini TTS.
     Processes the entire workflow: script splitting, audio generation, merging, and video creation.
     """
+    
     if not api_key:
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = os.environ.get("GEMINI_API_KEY") 
         if not api_key:
             raise HTTPException(status_code=400, detail="API key is required for Gemini TTS")
-    
+    print('api ket is ',api_key)
     task_id = str(uuid.uuid4())
     
     # Save image upload

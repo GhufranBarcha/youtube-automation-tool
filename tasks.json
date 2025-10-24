@@ -27,5 +27,23 @@
     "status": "failed",
     "updated_at": "2025-10-24T16:56:17.773613",
     "error": "Processing error: 401 Client Error: Unauthorized for url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+  },
+  "baa835fc-afa5-4b8b-9eb2-e9b2eae812e1": {
+    "created_at": "2025-10-24T17:12:17.177464",
+    "status": "failed",
+    "updated_at": "2025-10-24T17:12:18.601589",
+    "error": "Processing error: 401 Client Error: Unauthorized for url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+  },
+  "ec5f1739-7b35-44b1-b604-046a3d0de437": {
+    "created_at": "2025-10-24T18:47:20.965324",
+    "status": "failed",
+    "updated_at": "2025-10-24T18:47:22.330149",
+    "error": "Processing error: 401 Client Error: Unauthorized for url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+  },
+  "9b22f082-ad83-438d-9734-aa3ff1f8a7c8": {
+    "created_at": "2025-10-24T18:49:12.380075",
+    "status": "completed",
+    "updated_at": "2025-10-24T18:49:17.455035",
+    "file_path": "/tmp/9b22f082-ad83-438d-9734-aa3ff1f8a7c8_output.mp4"
   }
 }

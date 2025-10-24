@@ -161,28 +161,22 @@ async def generate_audio_with_gemini(text: str, api_key: str) -> bytes:
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
     
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "x-goog-api-key": api_key,
         "Content-Type": "application/json"
     }
     
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": text
-                    }
-                ]
-            }
-        ],
+        "contents": [{
+            "parts": [{
+                "text": text
+            }]
+        }],
         "generationConfig": {
-            "responseModalities": ["audio"],
-            "temperature": 1,
-            "speech_config": {
-                "voice_config": {
-                    "prebuilt_voice_config": {
-                        "voice_name": "Zephyr"
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": "Zephyr"
                     }
                 }
             }
